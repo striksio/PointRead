@@ -16,6 +16,9 @@ PIPELINE = (
 lock = threading.Lock()
 latest = {"jpg": None}
 
+def _in_bounds(pt, w, h, margin=25):
+    x, y = pt
+    return margin <= x < w - margin and margin <= y < h - margin
 
 def _crop_square(frame):
     h, w = frame.shape[:2]
@@ -54,12 +57,17 @@ def capture_loop(hand, detector=None):
             tip = thb = None
             if len(kpts) > 0:
                 k, sc = kpts[0], scores[0]
+                H, W = frame.shape[:2]
                 if sc[8] >= 0.3:
-                    tip = (int(k[8][0]), int(k[8][1]))
-                    frame = _draw_point(frame, tip[0], tip[1], (0, 255, 0), R)
+                    p = (int(k[8][0]), int(k[8][1]))
+                    if _in_bounds(p, W, H):
+                        tip = p
+                        frame = _draw_point(frame, p[0], p[1], (0, 255, 0), R)
                 if sc[4] >= 0.3:
-                    thb = (int(k[4][0]), int(k[4][1]))
-                    frame = _draw_point(frame, thb[0], thb[1], (0, 180, 255), R)
+                    p = (int(k[4][0]), int(k[4][1]))
+                    if _in_bounds(p, W, H):
+                        thb = p
+                        frame = _draw_point(frame, p[0], p[1], (0, 180, 255), R)
 
             event = detector.update(tip, thb)
             if event:
