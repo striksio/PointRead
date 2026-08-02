@@ -1,5 +1,6 @@
 import time
 import threading
+import subprocess
 
 import cv2
 
@@ -15,10 +16,23 @@ PIPELINE = (
 # shared frame buffer, read by the web server
 lock = threading.Lock()
 latest = {"jpg": None}
+# reset flag, set by the web server on page load
+state = {"reset": False}
+
+WAIT = 2.0  # seconds between activation and the start of drawing
+
+
+# near the shared state
+signal = {"beep": False}
+
+def beep():
+    signal["beep"] = True
+
 
 def _in_bounds(pt, w, h, margin=25):
     x, y = pt
     return margin <= x < w - margin and margin <= y < h - margin
+
 
 def _crop_square(frame):
     h, w = frame.shape[:2]
@@ -45,12 +59,27 @@ def capture_loop(hand, detector=None):
     t, n, fps = time.time(), 0, 0.0
     R = detector.r
 
+    trail = []
+    capture_at = None
+    waiting = False
+    recording = False
+
     while True:
         try:
             ok, frame = cap.read()
             if not ok or frame is None:
                 time.sleep(0.005); continue
             frame = _crop_square(frame)
+
+            if state["reset"]:
+                trail = []
+                capture_at = None
+                waiting = False
+                recording = False
+                detector.active = False
+                detector.armed_at = None
+                detector.was_over = False
+                state["reset"] = False
 
             kpts, scores = hand(frame)
 
@@ -70,8 +99,39 @@ def capture_loop(hand, detector=None):
                         frame = _draw_point(frame, p[0], p[1], (0, 180, 255), R)
 
             event = detector.update(tip, thb)
-            if event:
-                print("CANNON", event.upper())
+            if event == "on":
+                trail = []
+                capture_at = time.time()
+                waiting = True
+                recording = False
+                print("capture start")
+            elif event == "off":
+                waiting = False
+                recording = False
+                print("capture stop")
+
+            # after the wait, beep once and begin recording
+            if waiting and time.time() - capture_at >= WAIT:
+                waiting = False
+                recording = True
+                beep()
+
+            # record the fingertip only while recording
+            if recording and tip is not None:
+                trail.append(tip)
+
+            # countdown during the wait
+            if waiting:
+                left = WAIT - (time.time() - capture_at)
+                if left > 0:
+                    cv2.putText(frame, f"{left:.1f}", (10, 110),
+                                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+
+            # draw the trail
+            for i in range(1, len(trail)):
+                cv2.line(frame, trail[i - 1], trail[i], (0, 255, 0), 4)
+            for p in trail:
+                cv2.circle(frame, p, 8, (0, 255, 0), -1)
 
             label = "ON" if detector.active else "OFF"
             col = (0, 255, 0) if detector.active else (0, 0, 255)
