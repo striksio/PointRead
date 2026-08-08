@@ -1,6 +1,5 @@
 import time
 import threading
-import subprocess
 
 import cv2
 
@@ -18,12 +17,13 @@ lock = threading.Lock()
 latest = {"jpg": None}
 # reset flag, set by the web server on page load
 state = {"reset": False}
-
-WAIT = 2.0  # seconds between activation and the start of drawing
-
-
-# near the shared state
+# beep flag, read by the web server and pushed to the browser
 signal = {"beep": False}
+
+WAIT = 2.0          # seconds between activation and the start of drawing
+DWELL_R = 20        # pixels, how far the tip may wander and still count as still
+DWELL_T = 2.0       # seconds the tip must stay within DWELL_R to auto-stop
+
 
 def beep():
     signal["beep"] = True
@@ -51,6 +51,10 @@ def _draw_point(frame, x, y, color, radius):
     return frame
 
 
+def _dist(a, b):
+    return ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
+
+
 def capture_loop(hand, detector=None):
     if detector is None:
         detector = PinchDetector()
@@ -63,6 +67,8 @@ def capture_loop(hand, detector=None):
     capture_at = None
     waiting = False
     recording = False
+    anchor = None
+    dwell_at = None
 
     while True:
         try:
@@ -76,6 +82,8 @@ def capture_loop(hand, detector=None):
                 capture_at = None
                 waiting = False
                 recording = False
+                anchor = None
+                dwell_at = None
                 detector.active = False
                 detector.armed_at = None
                 detector.was_over = False
@@ -104,6 +112,8 @@ def capture_loop(hand, detector=None):
                 capture_at = time.time()
                 waiting = True
                 recording = False
+                anchor = None
+                dwell_at = None
                 print("capture start")
             elif event == "off":
                 waiting = False
@@ -114,11 +124,25 @@ def capture_loop(hand, detector=None):
             if waiting and time.time() - capture_at >= WAIT:
                 waiting = False
                 recording = True
+                anchor = None
+                dwell_at = None
                 beep()
 
-            # record the fingertip only while recording
+            # record the fingertip and run the dwell-to-stop check
             if recording and tip is not None:
                 trail.append(tip)
+
+                if anchor is None or _dist(tip, anchor) > DWELL_R:
+                    anchor = tip
+                    dwell_at = time.time()
+                elif time.time() - dwell_at >= DWELL_T:
+                    # finger held still, auto-stop
+                    recording = False
+                    detector.active = False
+                    detector.armed_at = None
+                    detector.was_over = False
+                    beep()
+                    print("capture stop (dwell)")
 
             # countdown during the wait
             if waiting:
