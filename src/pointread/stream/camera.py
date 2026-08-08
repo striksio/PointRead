@@ -168,6 +168,9 @@ def capture_loop(hand, detector=None):
                     box = _line_above(closed, tip)
                     if box is not None:
                         x, y, w, h = box
+                        pad = int(h * 0.15)
+                        y = y - pad
+                        h = h + 2 * pad
                         start = tx if not bands else x  # first line at finger, later at left edge
                         bands.append({"x": x, "w": w, "y": y, "h": h,
                                       "start": start, "fill": start})
