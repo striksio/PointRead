@@ -55,6 +55,34 @@ def _dist(a, b):
     return ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
 
 
+def _line_binary(gray):
+    blur = cv2.GaussianBlur(gray, (5, 5), 0)
+    b = cv2.adaptiveThreshold(
+        blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY, 31, 10)
+    inv = cv2.bitwise_not(b)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 3))
+    return cv2.morphologyEx(inv, cv2.MORPH_CLOSE, kernel)
+
+
+def _line_above(closed, tip, max_gap=120):
+    n, labels, stats, cents = cv2.connectedComponentsWithStats(closed, 8)
+    tx, ty = tip
+    best, best_dy = None, None
+    for i in range(1, n):
+        x, y, w, h, area = stats[i]
+        if area < 200:
+            continue
+        if not (x <= tx <= x + w):
+            continue
+        bottom = y + h
+        dy = ty - bottom
+        if 0 <= dy <= max_gap:
+            if best_dy is None or dy < best_dy:
+                best_dy, best = dy, (x, y, w, h)
+    return best
+
+
 def capture_loop(hand, detector=None):
     if detector is None:
         detector = PinchDetector()
@@ -63,12 +91,12 @@ def capture_loop(hand, detector=None):
     t, n, fps = time.time(), 0, 0.0
     R = detector.r
 
-    trail = []
     capture_at = None
     waiting = False
     recording = False
     anchor = None
     dwell_at = None
+    bands = []          # each: {"y", "h", "start", "fill"}
 
     while True:
         try:
@@ -78,12 +106,12 @@ def capture_loop(hand, detector=None):
             frame = _crop_square(frame)
 
             if state["reset"]:
-                trail = []
                 capture_at = None
                 waiting = False
                 recording = False
                 anchor = None
                 dwell_at = None
+                bands = []
                 detector.active = False
                 detector.armed_at = None
                 detector.was_over = False
@@ -99,7 +127,6 @@ def capture_loop(hand, detector=None):
                     p = (int(k[8][0]), int(k[8][1]))
                     if _in_bounds(p, W, H):
                         tip = p
-                        frame = _draw_point(frame, p[0], p[1], (0, 255, 0), R)
                 if not recording and sc[4] >= 0.3:
                     p = (int(k[4][0]), int(k[4][1]))
                     if _in_bounds(p, W, H):
@@ -108,17 +135,13 @@ def capture_loop(hand, detector=None):
 
             event = detector.update(tip, None if recording else thb)
             if event == "on":
-                trail = []
                 capture_at = time.time()
                 waiting = True
                 recording = False
                 anchor = None
                 dwell_at = None
+                bands = []
                 print("capture start")
-            elif event == "off":
-                waiting = False
-                recording = False
-                print("capture stop")
 
             # after the wait, beep once and begin recording
             if waiting and time.time() - capture_at >= WAIT:
@@ -126,17 +149,39 @@ def capture_loop(hand, detector=None):
                 recording = True
                 anchor = None
                 dwell_at = None
+                bands = []
                 beep()
 
-            # record the fingertip and run the dwell-to-stop check
+            # record the fingertip, accumulate line bands, run the dwell check
             if recording and tip is not None:
-                trail.append(tip)
+                tx, ty = tip
 
+                # is the tip within the current active band's vertical range
+                cur = bands[-1] if bands else None
+                on_current = (cur is not None and
+                              cur["y"] - 10 <= ty <= cur["y"] + cur["h"] + 30)
+
+                if not on_current:
+                    # detect the line above the tip and lock it as a new band
+                    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                    closed = _line_binary(gray)
+                    box = _line_above(closed, tip)
+                    if box is not None:
+                        x, y, w, h = box
+                        start = tx if not bands else x  # first line at finger, later at left edge
+                        bands.append({"x": x, "w": w, "y": y, "h": h,
+                                      "start": start, "fill": start})
+                        cur = bands[-1]
+
+                # extend the current band fill to the fingertip x
+                if cur is not None:
+                    cur["fill"] = max(cur["fill"], min(tx, cur["x"] + cur["w"]))
+
+                # dwell-to-stop
                 if anchor is None or _dist(tip, anchor) > DWELL_R:
                     anchor = tip
                     dwell_at = time.time()
                 elif time.time() - dwell_at >= DWELL_T:
-                    # finger held still, auto-stop
                     recording = False
                     detector.active = False
                     detector.armed_at = None
@@ -144,18 +189,20 @@ def capture_loop(hand, detector=None):
                     beep()
                     print("capture stop (dwell)")
 
+            # draw all locked bands as translucent red fill
+            if bands:
+                overlay = frame.copy()
+                for b in bands:
+                    cv2.rectangle(overlay, (b["start"], b["y"]),
+                                  (b["fill"], b["y"] + b["h"]), (0, 0, 255), -1)
+                frame = cv2.addWeighted(overlay, 0.4, frame, 0.6, 0)
+
             # countdown during the wait
             if waiting:
                 left = WAIT - (time.time() - capture_at)
                 if left > 0:
                     cv2.putText(frame, f"{left:.1f}", (10, 110),
                                 cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
-
-            # draw the trail
-            for i in range(1, len(trail)):
-                cv2.line(frame, trail[i - 1], trail[i], (0, 255, 0), 4)
-            for p in trail:
-                cv2.circle(frame, p, 8, (0, 255, 0), -1)
 
             label = "ON" if detector.active else "OFF"
             col = (0, 255, 0) if detector.active else (0, 0, 255)
