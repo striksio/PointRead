@@ -15,10 +15,24 @@ PIPELINE = (
 # shared frame buffer, read by the web server
 lock = threading.Lock()
 latest = {"jpg": None}
+# reset flag, set by the web server on page load
+state = {"reset": False}
+# beep flag, read by the web server and pushed to the browser
+signal = {"beep": False}
+
+WAIT = 2.0          # seconds between activation and the start of drawing
+DWELL_R = 20        # pixels, how far the tip may wander and still count as still
+DWELL_T = 2.0       # seconds the tip must stay within DWELL_R to auto-stop
+
+
+def beep():
+    signal["beep"] = True
+
 
 def _in_bounds(pt, w, h, margin=25):
     x, y = pt
     return margin <= x < w - margin and margin <= y < h - margin
+
 
 def _crop_square(frame):
     h, w = frame.shape[:2]
@@ -37,6 +51,10 @@ def _draw_point(frame, x, y, color, radius):
     return frame
 
 
+def _dist(a, b):
+    return ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
+
+
 def capture_loop(hand, detector=None):
     if detector is None:
         detector = PinchDetector()
@@ -45,12 +63,31 @@ def capture_loop(hand, detector=None):
     t, n, fps = time.time(), 0, 0.0
     R = detector.r
 
+    trail = []
+    capture_at = None
+    waiting = False
+    recording = False
+    anchor = None
+    dwell_at = None
+
     while True:
         try:
             ok, frame = cap.read()
             if not ok or frame is None:
                 time.sleep(0.005); continue
             frame = _crop_square(frame)
+
+            if state["reset"]:
+                trail = []
+                capture_at = None
+                waiting = False
+                recording = False
+                anchor = None
+                dwell_at = None
+                detector.active = False
+                detector.armed_at = None
+                detector.was_over = False
+                state["reset"] = False
 
             kpts, scores = hand(frame)
 
@@ -70,8 +107,55 @@ def capture_loop(hand, detector=None):
                         frame = _draw_point(frame, p[0], p[1], (0, 180, 255), R)
 
             event = detector.update(tip, thb)
-            if event:
-                print("CANNON", event.upper())
+            if event == "on":
+                trail = []
+                capture_at = time.time()
+                waiting = True
+                recording = False
+                anchor = None
+                dwell_at = None
+                print("capture start")
+            elif event == "off":
+                waiting = False
+                recording = False
+                print("capture stop")
+
+            # after the wait, beep once and begin recording
+            if waiting and time.time() - capture_at >= WAIT:
+                waiting = False
+                recording = True
+                anchor = None
+                dwell_at = None
+                beep()
+
+            # record the fingertip and run the dwell-to-stop check
+            if recording and tip is not None:
+                trail.append(tip)
+
+                if anchor is None or _dist(tip, anchor) > DWELL_R:
+                    anchor = tip
+                    dwell_at = time.time()
+                elif time.time() - dwell_at >= DWELL_T:
+                    # finger held still, auto-stop
+                    recording = False
+                    detector.active = False
+                    detector.armed_at = None
+                    detector.was_over = False
+                    beep()
+                    print("capture stop (dwell)")
+
+            # countdown during the wait
+            if waiting:
+                left = WAIT - (time.time() - capture_at)
+                if left > 0:
+                    cv2.putText(frame, f"{left:.1f}", (10, 110),
+                                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+
+            # draw the trail
+            for i in range(1, len(trail)):
+                cv2.line(frame, trail[i - 1], trail[i], (0, 255, 0), 4)
+            for p in trail:
+                cv2.circle(frame, p, 8, (0, 255, 0), -1)
 
             label = "ON" if detector.active else "OFF"
             col = (0, 255, 0) if detector.active else (0, 0, 255)
