@@ -100,13 +100,13 @@ def capture_loop(hand, detector=None):
                     if _in_bounds(p, W, H):
                         tip = p
                         frame = _draw_point(frame, p[0], p[1], (0, 255, 0), R)
-                if sc[4] >= 0.3:
+                if not recording and sc[4] >= 0.3:
                     p = (int(k[4][0]), int(k[4][1]))
                     if _in_bounds(p, W, H):
                         thb = p
                         frame = _draw_point(frame, p[0], p[1], (0, 180, 255), R)
 
-            event = detector.update(tip, thb)
+            event = detector.update(tip, None if recording else thb)
             if event == "on":
                 trail = []
                 capture_at = time.time()
