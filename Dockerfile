@@ -22,14 +22,20 @@ COPY --from=trt /usr/local/lib/python3.12/dist-packages/tensorrt-10.16.1.11-cp31
 
 RUN pip install --no-cache-dir /tmp/tensorrt-10.16.1.11-cp312-none-linux_aarch64.whl
 
-# rtmlib stack, no opencv override
-RUN pip install --no-cache-dir --index-url https://pypi.org/simple \
-    onnxruntime numpy tqdm pycuda
-RUN pip install --no-cache-dir --index-url https://pypi.org/simple \
-    --no-deps rtmlib
+# core stack, no opencv override
 RUN pip install --no-cache-dir --index-url https://pypi.org/simple \
     onnxruntime numpy tqdm pycuda aiohttp
-    
+
+# rtmlib, no deps so it does not override opencv or onnxruntime
+RUN pip install --no-cache-dir --index-url https://pypi.org/simple \
+    --no-deps rtmlib
+
+# rapidocr, no deps so it does not override onnxruntime, then its runtime deps
+RUN pip install --no-cache-dir --index-url https://pypi.org/simple \
+    --no-deps rapidocr-onnxruntime
+RUN pip install --no-cache-dir --index-url https://pypi.org/simple \
+    pyclipper shapely PyYAML Pillow six
+
 ENV LD_LIBRARY_PATH=/usr/local/cuda-13.2/targets/aarch64-linux/lib:${LD_LIBRARY_PATH}
 
 WORKDIR /workspace

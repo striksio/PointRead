@@ -13,6 +13,7 @@ PAGE = """
 <img id="v" style="max-width:100vw;max-height:100vh;width:auto;height:auto;object-fit:contain">
 <audio id="silent" playsinline loop preload="auto" src="/silent.wav"></audio>
 <button id="enable" style="position:fixed;inset:0;width:100%;height:100%;background:rgba(0,0,0,.8);color:#fff;font:20px monospace;border:0;z-index:20">tap to enable sound</button>
+<div id="ocr" style="position:fixed;left:0;right:0;bottom:0;background:rgba(0,0,0,.75);color:#fff;font:20px sans-serif;padding:12px;text-align:center;z-index:15;min-height:1.4em"></div>
 <script>
 fetch('/reset');
 
@@ -69,7 +70,12 @@ function playBeep() {
 const proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
 
 const ev = new WebSocket(proto + location.host + '/events');
-ev.onmessage = (e) => { if (e.data === 'beep') playBeep(); };
+ev.onmessage = (e) => {
+  if (e.data === 'beep') { playBeep(); return; }
+  if (e.data.startsWith('text:')) {
+    document.getElementById('ocr').textContent = e.data.slice(5);
+  }
+};
 ev.onclose = () => setTimeout(()=>location.reload(), 1500);
 
 const img = document.getElementById('v');
@@ -101,14 +107,23 @@ async def events(request):
     return ws
 
 
+from pointread.stream.camera import lock, latest, state, signal, ocr_out
+
 async def beep_pump(app):
     while True:
         if signal["beep"]:
             signal["beep"] = False
-            print("broadcast beep to", len(_clients))
             for ws in list(_clients):
                 try:
                     await ws.send_str("beep")
+                except Exception:
+                    _clients.discard(ws)
+        if ocr_out["text"] is not None:
+            msg = "text:" + ocr_out["text"]
+            ocr_out["text"] = None
+            for ws in list(_clients):
+                try:
+                    await ws.send_str(msg)
                 except Exception:
                     _clients.discard(ws)
         await asyncio.sleep(0.02)

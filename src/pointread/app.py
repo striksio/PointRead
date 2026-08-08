@@ -7,7 +7,7 @@ from pointread.gesture.pinch import PinchDetector
 from pointread.stream.camera import capture_loop
 from pointread.stream.server import build_app
 
-CKPT = "/models/"
+CKPT = "/models/engines/"
 DET_ENGINE = CKPT + "rtmdet_hand_fp16.engine"
 POSE_ENGINE = CKPT + "rtmpose_hand_fp16.engine"
 

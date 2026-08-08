@@ -2,3 +2,7 @@ __pycache__/
 *.pyc
 models/*
 assets/*
+models/**
+!models/**/
+!models/**/.gitkeep
+ocr_models/*

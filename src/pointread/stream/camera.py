@@ -1,16 +1,29 @@
 import time
 import threading
-
+import numpy as np
 import cv2
 
-from pointread.gesture.pinch import PinchDetector
+import json
 
+from pointread.gesture.pinch import PinchDetector
+import os
+import datetime
+
+from rapidocr_onnxruntime import RapidOCR
+
+OCR_DIR = "/models/ocr"
+ocr_engine = RapidOCR(
+    det_model_path=OCR_DIR + "/detection/v5/det.onnx",
+    rec_model_path=OCR_DIR + "/languages/english/rec.onnx",
+    rec_keys_path=OCR_DIR + "/languages/english/dict.txt",
+)
 PIPELINE = (
     "nvarguscamerasrc wbmode=1 "
-    "! video/x-raw(memory:NVMM), width=1280, height=720, framerate=30/1 "
+    "! video/x-raw(memory:NVMM), width=1920, height=1080, framerate=30/1 "
     "! nvvidconv flip-method=1 ! video/x-raw, format=BGRx "
     "! queue ! videoconvert ! video/x-raw, format=BGR ! appsink drop=1 max-buffers=1"
 )
+SAVE_DIR = "/workspace/assets/captures"
 
 # shared frame buffer, read by the web server
 lock = threading.Lock()
@@ -19,12 +32,64 @@ latest = {"jpg": None}
 state = {"reset": False}
 # beep flag, read by the web server and pushed to the browser
 signal = {"beep": False}
+ocr_out = {"text": None}
 
 WAIT = 2.0          # seconds between activation and the start of drawing
 DWELL_R = 20        # pixels, how far the tip may wander and still count as still
 DWELL_T = 2.0       # seconds the tip must stay within DWELL_R to auto-stop
 
 
+def _save_capture(clean, bands):
+    if not bands:
+        return
+    os.makedirs(SAVE_DIR, exist_ok=True)
+
+    xs1 = [b["start"] for b in bands]
+    xs2 = [b["fill"] for b in bands]
+    ys1 = [b["y"] for b in bands]
+    ys2 = [b["y"] + b["h"] for b in bands]
+
+    x1 = max(0, min(xs1))
+    x2 = min(clean.shape[1], max(xs2))
+    y1 = max(0, min(ys1))
+    y2 = min(clean.shape[0], max(ys2))
+    if x2 <= x1 or y2 <= y1:
+        return
+
+    out = np.full((y2 - y1, x2 - x1, 3), 255, dtype=np.uint8)
+    for b in bands:
+        bx1 = max(0, b["start"])
+        bx2 = min(clean.shape[1], b["fill"])
+        by1 = max(0, b["y"])
+        by2 = min(clean.shape[0], b["y"] + b["h"])
+        if bx2 <= bx1 or by2 <= by1:
+            continue
+        patch = clean[by1:by2, bx1:bx2]
+        out[by1 - y1:by2 - y1, bx1 - x1:bx2 - x1] = patch
+
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+    img_path = os.path.join(SAVE_DIR, ts + ".png")
+    cv2.imwrite(img_path, out)
+
+    # OCR the array directly
+    result, _ = ocr_engine(out)
+    lines = [r[1] for r in result] if result else []
+    text = " ".join(lines)
+    print("OCR:", text if text else "(no text)")
+    ocr_out["text"] = text
+
+    # save the recognized text next to the image
+    meta = {
+        "timestamp": ts,
+        "image": os.path.basename(img_path),
+        "text": text,
+        "lines": lines,
+    }
+    json_path = os.path.join(SAVE_DIR, ts + ".json")
+    with open(json_path, "w") as f:
+        json.dump(meta, f, ensure_ascii=False, indent=2)
+    print("saved", img_path, "and", os.path.basename(json_path))
+    
 def beep():
     signal["beep"] = True
 
@@ -104,6 +169,7 @@ def capture_loop(hand, detector=None):
             if not ok or frame is None:
                 time.sleep(0.005); continue
             frame = _crop_square(frame)
+            clean = frame.copy()
 
             if state["reset"]:
                 capture_at = None
@@ -189,6 +255,7 @@ def capture_loop(hand, detector=None):
                     detector.active = False
                     detector.armed_at = None
                     detector.was_over = False
+                    _save_capture(clean, bands)
                     beep()
                     print("capture stop (dwell)")
 
